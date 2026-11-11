@@ -1,0 +1,92 @@
+/* Additions for the React version of the approved design. */
+.panel-in { display: flex; flex-direction: column; gap: 16px; min-width: 0; flex: 1 1 auto; }
+.dd-btn .v .sw { display: inline-block; vertical-align: middle; margin-inline-end: 8px; }
+.dd-list li .tick { width: 16px; visibility: hidden; }
+.dd-list li[aria-selected="true"] .tick { visibility: visible; }
+.stages-more { align-self: flex-start; }
+@media (max-width: 720px) {
+  .panel-in { gap: 16px; }
+}
+.note-head .avatar svg { width: 16px; height: 16px; }
+
+/* parts of a panel wait for their staggered entrance (Motion), then stay */
+.panel-in.pre > * { opacity: 0; }
+
+/* the demo notice: neutral, one line on phones, can be closed for this visit */
+.demo-bar { display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 12px; padding-inline-start: 16px; font-size: 13px; line-height: 1.8; }
+.demo-bar > svg { color: var(--info); flex: none; }
+.demo-bar .demo-text { flex: 1; min-width: 0; }
+.demo-bar .demo-short { display: none; }
+.demo-bar .demo-x { flex: none; border-color: transparent; background: none; }
+@media (max-width: 720px) {
+  .demo-bar .demo-long { display: none; }
+  .demo-bar .demo-short { display: inline; }
+  .demo-bar .demo-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .demo-bar .demo-x { width: 44px; height: 44px; }
+}
+
+/* disabled buttons look disabled */
+.btn:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; translate: none; }
+.btn:disabled:hover { background: var(--glass-soft); }
+.btn.primary:disabled:hover { background: var(--accent); }
+
+/* errors are red; «مطمئن نیستم» stays amber */
+.why.err { color: var(--neg); }
+.inp.err, .dd.err .dd-btn { border-color: var(--neg); }
+.hint.err { color: var(--neg); }
+.pcard.has-err { border-color: color-mix(in srgb, var(--neg) 45%, var(--glass-border)); }
+.sheet-foot .foot-why { flex-basis: 100%; order: -1; display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 4px; border: 0; background: none; color: var(--neg); font: inherit; font-size: 13px; font-weight: 600; text-align: start; cursor: pointer; border-radius: 10px; }
+.sheet-foot .foot-why:hover { background: var(--glass-hover); }
+
+/* phones: the reject button gets its own row, never pushed off the edge */
+@media (max-width: 480px) { .sheet-foot .btn.danger { flex-basis: 100%; } }
+
+/* inputs: the whole field takes the tap */
+.inp { cursor: text; }
+.inp input, .inp textarea { align-self: stretch; }
+.cap-opt:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* toast: solid enough to read; centred with translate so Motion's transform can move it; above an open window's buttons on phones */
+.toast { transform: none; translate: -50% 0; background: var(--sheet-solid); }
+@media (max-width: 720px) {
+  body[data-sheet] .toast { top: calc(12px + env(safe-area-inset-top, 0px)); bottom: auto; }
+}
+
+.pages { align-items: center; }
+
+/* stages: earlier finished stages fold into one row */
+.stage.more { display: block; padding: 0; }
+.stage.more button { width: 100%; display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 12px; align-items: center; min-height: 44px; padding: 8px 0; border: 0; background: none; color: var(--fg); font: inherit; text-align: start; cursor: pointer; border-radius: 10px; }
+.stage.more button:hover { background: var(--glass-hover); }
+.stage.more .n { background: var(--pos-soft); color: var(--pos); border-color: transparent; }
+.inbox-list .empty .btn { margin-top: 6px; }
+.pcard.dropped { display: flex; flex-direction: row; align-items: center; justify-content: flex-start; gap: 10px; padding: 8px 14px; }
+.pcard.dropped .btn { margin-inline-start: auto; }
+.top-search input, .side-search input { align-self: stretch; }
+.toast.error svg { color: var(--neg); }
+.toast.info svg { color: var(--info); }
+
+.nowrap { white-space: nowrap; }
+.dp-field { display: none; }
+@media (max-width: 720px) {
+  .dd-pop.dp { box-shadow: 0 0 0 100vmax rgba(0, 0, 0, .38), 0 -20px 50px rgba(0, 0, 0, .35); }
+  .dp-field { display: block; font-size: 13px; color: var(--muted); text-align: center; margin-bottom: 6px; }
+}
+@media (max-width: 480px) {
+  .chart-sum { grid-template-columns: 1fr; gap: 6px; }
+  .chart-sum div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  .chart-sum b { white-space: nowrap; }
+}
+/* collapsed sidebar: the live dot and the count sit clear of the icon */
+.sidebar.collapsed .nav .dot { position: absolute; top: 8px; inset-inline-start: 10px; inset-inline-end: auto; width: 6px; height: 6px; }
+.sidebar.collapsed .nav .badge { transform: translate(-16px, -14px) scale(.8); box-shadow: 0 0 0 2px var(--glass-strong); }
+.stage.just-added { border-radius: 10px; background: color-mix(in oklab, var(--accent) 14%, transparent); transition: background 1.2s ease; }
+
+@media (prefers-reduced-motion: reduce) { .panel-in.pre > * { opacity: 1 !important; transform: none !important; } }
+
+/* first-paint positions for the entrances (only when motion is allowed); scripts remove them as they animate */
+@media (prefers-reduced-motion: no-preference) {
+  .panel.pre-move { transform: translateY(34px) scale(.965); }
+  html:not([data-entered]) .nav li.pre-in { opacity: 0; }
+  .topbar.pre-drop { transform: translateY(-16px); }
+}
