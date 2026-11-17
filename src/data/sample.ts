@@ -1,6 +1,6 @@
 // Sample books shown until the real server is connected (labelled «دادهٔ نمونه» in the app).
 // Numbers agree with each other: month totals, stage totals, balances and debts all come from the same rows.
-import type { Account, Book, DailyNote, DocumentRec, Ledger, Obligation, Person, Stage, Transaction } from '@/lib/book';
+import type { Account, Activity, Book, Cheque, DailyNote, DocumentRec, Ledger, Obligation, Person, Stage, Transaction } from '@/lib/book';
 import { parseMarked } from '@/lib/transcript';
 import { formatJalali } from '@/lib/jalali';
 
@@ -18,7 +18,7 @@ const ledgers: Ledger[] = [
 const P = {
   nouri: 'p-nouri', moradi: 'p-moradi', rezaei: 'p-rezaei', crew: 'p-crew', pars: 'p-pars', ahmadi: 'p-ahmadi',
   tavakoli: 'p-tavakoli', omid: 'p-omid', salehi: 'p-salehi', sahel: 'p-sahel', novin: 'p-novin', karimi: 'p-karimi',
-  municipality: 'p-municipality', power: 'p-power',
+  municipality: 'p-municipality', power: 'p-power', buyer: 'p-buyer',
 };
 const people: Person[] = [
   { id: P.nouri, kind: 'contractor', fullName: 'استاد کاظم نوری', roleTitle: 'پیمانکار اسکلت', initials: 'ک‌ن' },
@@ -35,6 +35,7 @@ const people: Person[] = [
   { id: P.karimi, kind: 'partner', fullName: 'مهدی کریمی', roleTitle: 'صاحب‌کار', initials: 'م‌ک' },
   { id: P.municipality, kind: 'office', fullName: 'شهرداری منطقهٔ ۲', roleTitle: 'اداره', initials: 'ش' },
   { id: P.power, kind: 'office', fullName: 'توزیع برق', roleTitle: 'اداره', initials: 'ب' },
+  { id: P.buyer, kind: 'buyer', fullName: 'خانم نادری', roleTitle: 'پیش‌خریدار واحد ۲', initials: 'ن' },
 ];
 
 // The 25 stages from the database template (stage_templates), with sample budgets in million Toman.
@@ -131,6 +132,26 @@ const dailyNotes: DailyNote[] = [
   { id: 'dn-2', ledgerId: L.project, noteDate: '2026-10-24', body: 'مهندس توکلی تراز فونداسیون را تأیید کرد و گزارش مرحله را به نظام مهندسی فرستاد.', stageId: S('foundation'), voided: false },
 ];
 
+// Cheques: none has cleared yet, so they move no money in the sample (balances above stay as they are).
+const cheques: Cheque[] = [
+  { id: 'chq-1', ledgerId: L.project, direction: 'issued', amountRial: m(120), personId: P.salehi, dueDate: '2026-11-21', accountId: A.bank, bank: 'ملت',
+    sayadNo: '1405112100481927', stageId: S('frame'), settles: false, description: 'میلگرد سقف سوم', status: 'pending', voided: false, history: ['۲ آبان · از عکس چک ثبت شد'] },
+  { id: 'chq-2', ledgerId: L.project, direction: 'issued', amountRial: m(40), personId: P.nouri, dueDate: '2026-11-14', accountId: A.bank, bank: 'ملت',
+    sayadNo: '1405111400221356', settles: true, description: 'صورت‌وضعیت اسکلت، قسط دوم', status: 'pending', voided: false, history: ['۲۵ مهر · از ویس ثبت شد'] },
+  { id: 'chq-3', ledgerId: L.project, direction: 'received', amountRial: m(300), personId: P.buyer, dueDate: '2026-12-06', bank: 'تجارت',
+    sayadNo: '1405091500773340', settles: false, description: 'قسط دوم پیش‌فروش واحد ۲', status: 'pending', voided: false, history: ['۱۰ آبان · از عکس چک ثبت شد'] },
+  { id: 'chq-4', ledgerId: L.project, direction: 'received', amountRial: m(25), personId: P.buyer, dueDate: '2026-10-20', bank: 'سپه',
+    settles: false, description: 'قسط اول پیش‌فروش، مانده', status: 'bounced', voided: false, history: ['۵ مهر · ثبت شد', '۲۸ مهر · برگشت خورد'] },
+];
+
+const activity: Activity[] = [
+  { id: 'ac-1', at: 'دیروز ۱۸:۰۲', text: 'عکس رسید پرداخت به مصالح‌فروشی امید رسید؛ منتظر تأیید', href: '/inbox', tone: 'info' },
+  { id: 'ac-2', at: 'دیروز ۱۴:۴۰', text: 'ویس سرکارگر: خرید نقدی و پیشرفت اسکلت؛ منتظر تأیید', href: '/inbox', tone: 'info' },
+  { id: 'ac-3', at: '۱۸ آبان', text: 'دستمزد ۶ کارگر، ۷٫۲ میلیون از تنخواه، در «کارکرد کارگرها» ثبت شد', href: '/workers', tone: 'accent' },
+  { id: 'ac-4', at: '۱۷ آبان', text: '۲۰۰ میلیون آوردهٔ صاحب‌کار به بانک ملت ثبت شد', href: '/transactions', tone: 'pos' },
+  { id: 'ac-5', at: '۱۶ آبان', text: 'یادداشت: کاور میلگرد ستون‌های محور B کافی نیست', href: '/notes', tone: 'warn' },
+];
+
 export function sampleBook(): Book {
   return {
     workspaceName: 'شرکت ساختمانی کریمی',
@@ -138,7 +159,12 @@ export function sampleBook(): Book {
     projectHint: '۴ طبقه، تهران',
     today: '2026-11-10',
     ledgers, accounts, people, stages, transactions, obligations,
-    workLogs: [], documents, dailyNotes, inspections: [],
+    workLogs: [
+      { id: 'wl-1', ledgerId: L.project, stageId: S('frame'), workDate: '2026-11-09', headcount: 6, wageRial: m(1.2), crewPersonId: P.crew, paid: true, description: 'بتن‌ریزی سقف دوم', voided: false },
+      { id: 'wl-2', ledgerId: L.project, stageId: S('frame'), workDate: '2026-11-05', headcount: 4, wageRial: m(1.2), crewPersonId: P.crew, paid: true, description: 'قالب‌بندی', voided: false },
+      { id: 'wl-3', ledgerId: L.project, stageId: S('foundation'), workDate: '2026-10-18', headcount: 8, wageRial: m(1.1), crewPersonId: P.crew, paid: true, description: 'آرماتوربندی فونداسیون', voided: false },
+    ],
+    documents, dailyNotes, inspections: [], cheques, activity,
     interLedger: [{ id: 'il-1', debtorLedgerId: L.project, creditorLedgerId: L.personal, amountRial: m(1.24), transactionId: transactions.find((t) => t.accountId === A.personal)!.id, voided: false }],
     inbox: [
       {
@@ -167,6 +193,16 @@ export function sampleBook(): Book {
         drafts: [
           { id: 'd-5', kind: 'payment', status: 'pending',
             fields: { amount_rial: m(8.5).toString(), account_id: A.bank, person_id: P.omid, stage_id: S('frame'), method: 'کارت به کارت', occurred_on: '2026-11-09' },
+            guess: { stage_id: 'از روی خریدهای قبلی همین فروشنده حدس زده شد' } },
+        ],
+      },
+      {
+        id: 'ib-4', ledgerId: L.project, kind: 'receipt', channel: 'telegram', title: 'عکس چک', receivedLabel: 'دیروز ۱۱:۱۵', status: 'ready',
+        chips: ['چک صادره ۹۰ میلیون', 'سررسید ۵ آذر'],
+        ocr: 'چک صیادی · بانک ملت · مبلغ: نهصد میلیون ریال · در وجه: بتن آمادهٔ پارس · تاریخ: ۱۴۰۵/۰۹/۰۵ · شناسهٔ صیادی ۱۴۰۵۰۹۰۵۰۰۱۲۳۴۵۶',
+        drafts: [
+          { id: 'd-8', kind: 'cheque', status: 'pending',
+            fields: { direction: 'issued', amount_rial: m(90).toString(), person_id: P.pars, due_date: '2026-11-26', account_id: A.bank, bank: 'ملت', sayad_no: '1405090500123456', stage_id: S('frame'), description: 'بتن سقف سوم' },
             guess: { stage_id: 'از روی خریدهای قبلی همین فروشنده حدس زده شد' } },
         ],
       },

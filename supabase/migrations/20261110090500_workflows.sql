@@ -81,6 +81,9 @@ begin
 end;
 $$;
 
+-- The business day is Tehran's, not the database server's (UTC): a voice at 01:00 belongs to that day.
+create function public.today_tehran() returns date language sql stable as $$ select (now() at time zone 'Asia/Tehran')::date $$;
+
 -- ---------- confirm ----------
 -- p_accept: the drafts to confirm (the rest are dropped). p_edits: { "<draft id>": { field: value, ... } } merged over the AI's fields.
 -- Each accepted draft records what it created in drafts.result so undo can reverse it.
@@ -129,10 +132,11 @@ begin
       amt := public.f_money(f, 'amount_rial');
       perform public.check_refs(ib.ledger_id, public.f_uuid(f, 'stage_id'), public.f_uuid(f, 'person_id'));
       perform public.require(public.f_uuid(f, 'account_id') is not null, 'payment needs an account');
+      perform public.require(public.can_use_account(public.f_uuid(f, 'account_id'), ib.ledger_id), 'this account cannot be used here');
       perform public.require(not public.f_bool(f, 'settles') or public.f_uuid(f, 'person_id') is not null, 'settling a debt needs the person it is owed to');
       insert into public.transactions (ledger_id, account_id, occurred_on, amount_rial, is_cost, person_id, stage_id,
                                        description, method, tracking_no, draft_id)
-      values (ib.ledger_id, public.f_uuid(f, 'account_id'), coalesce(public.f_date(f, 'occurred_on'), current_date), -amt,
+      values (ib.ledger_id, public.f_uuid(f, 'account_id'), coalesce(public.f_date(f, 'occurred_on'), public.today_tehran()), -amt,
               not public.f_bool(f, 'settles'), public.f_uuid(f, 'person_id'), public.f_uuid(f, 'stage_id'),
               coalesce(public.f_text(f, 'description'), (select 'پرداخت به ' || full_name from public.people where id = public.f_uuid(f, 'person_id')), 'پرداخت'),
               public.f_text(f, 'method'), public.f_text(f, 'tracking_no'), d.id)
@@ -143,8 +147,9 @@ begin
       amt := public.f_money(f, 'amount_rial');
       perform public.check_refs(ib.ledger_id, null, public.f_uuid(f, 'person_id'));
       perform public.require(public.f_uuid(f, 'account_id') is not null, 'receipt needs an account');
+      perform public.require(public.can_use_account(public.f_uuid(f, 'account_id'), ib.ledger_id), 'this account cannot be used here');
       insert into public.transactions (ledger_id, account_id, occurred_on, amount_rial, is_cost, person_id, description, method, tracking_no, draft_id)
-      values (ib.ledger_id, public.f_uuid(f, 'account_id'), coalesce(public.f_date(f, 'occurred_on'), current_date), amt, false,
+      values (ib.ledger_id, public.f_uuid(f, 'account_id'), coalesce(public.f_date(f, 'occurred_on'), public.today_tehran()), amt, false,
               public.f_uuid(f, 'person_id'),
               coalesce(public.f_text(f, 'description'), (select 'دریافت از ' || full_name from public.people where id = public.f_uuid(f, 'person_id')), 'دریافت'),
               public.f_text(f, 'method'), public.f_text(f, 'tracking_no'), d.id)
@@ -155,13 +160,15 @@ begin
       amt := public.f_money(f, 'amount_rial');
       perform public.require(public.f_uuid(f, 'from_account_id') is not null and public.f_uuid(f, 'to_account_id') is not null
                              and public.f_uuid(f, 'from_account_id') <> public.f_uuid(f, 'to_account_id'), 'transfer needs two different accounts');
+      perform public.require(public.can_use_account(public.f_uuid(f, 'from_account_id'), ib.ledger_id)
+                             and public.can_use_account(public.f_uuid(f, 'to_account_id'), ib.ledger_id), 'this account cannot be used here');
       tr := gen_random_uuid();
       insert into public.transactions (ledger_id, account_id, occurred_on, amount_rial, transfer_id, description, draft_id)
-      values (ib.ledger_id, public.f_uuid(f, 'from_account_id'), coalesce(public.f_date(f, 'occurred_on'), current_date), -amt, tr, coalesce(public.f_text(f, 'description'), 'انتقال بین حساب‌ها'), d.id)
+      values (ib.ledger_id, public.f_uuid(f, 'from_account_id'), coalesce(public.f_date(f, 'occurred_on'), public.today_tehran()), -amt, tr, coalesce(public.f_text(f, 'description'), 'انتقال بین حساب‌ها'), d.id)
       returning id into new_id;
       created := created || jsonb_build_object('table', 'transactions', 'id', new_id);
       insert into public.transactions (ledger_id, account_id, occurred_on, amount_rial, transfer_id, description, draft_id)
-      values (ib.ledger_id, public.f_uuid(f, 'to_account_id'), coalesce(public.f_date(f, 'occurred_on'), current_date), amt, tr, coalesce(public.f_text(f, 'description'), 'انتقال بین حساب‌ها'), d.id)
+      values (ib.ledger_id, public.f_uuid(f, 'to_account_id'), coalesce(public.f_date(f, 'occurred_on'), public.today_tehran()), amt, tr, coalesce(public.f_text(f, 'description'), 'انتقال بین حساب‌ها'), d.id)
       returning id into new_id;
       created := created || jsonb_build_object('table', 'transactions', 'id', new_id);
 
@@ -173,21 +180,22 @@ begin
       tx_id := null; ob_id := null;
       if amt > 0 and public.f_bool(f, 'paid') then
         perform public.require(public.f_uuid(f, 'account_id') is not null, 'paid wages need an account');
+        perform public.require(public.can_use_account(public.f_uuid(f, 'account_id'), ib.ledger_id), 'this account cannot be used here');
         insert into public.transactions (ledger_id, account_id, occurred_on, amount_rial, is_cost, person_id, stage_id, description, draft_id)
-        values (ib.ledger_id, public.f_uuid(f, 'account_id'), coalesce(public.f_date(f, 'work_date'), current_date), -amt, true,
+        values (ib.ledger_id, public.f_uuid(f, 'account_id'), coalesce(public.f_date(f, 'work_date'), public.today_tehran()), -amt, true,
                 public.f_uuid(f, 'crew_person_id'), public.f_uuid(f, 'stage_id'), coalesce(public.f_text(f, 'description'), 'دستمزد کارگران'), d.id)
         returning id into tx_id;
         created := created || jsonb_build_object('table', 'transactions', 'id', tx_id);
       elsif amt > 0 then
         perform public.require(public.f_uuid(f, 'crew_person_id') is not null, 'unpaid wages need the crew or person they are owed to');
         insert into public.obligations (ledger_id, person_id, stage_id, occurred_on, amount_rial, kind, description, draft_id)
-        values (ib.ledger_id, public.f_uuid(f, 'crew_person_id'), public.f_uuid(f, 'stage_id'), coalesce(public.f_date(f, 'work_date'), current_date),
+        values (ib.ledger_id, public.f_uuid(f, 'crew_person_id'), public.f_uuid(f, 'stage_id'), coalesce(public.f_date(f, 'work_date'), public.today_tehran()),
                 amt, 'work', coalesce(public.f_text(f, 'description'), 'دستمزد کارگران'), d.id)
         returning id into ob_id;
         created := created || jsonb_build_object('table', 'obligations', 'id', ob_id);
       end if;
       insert into public.work_logs (ledger_id, stage_id, work_date, headcount, description, wage_rial, crew_person_id, paid, transaction_id, obligation_id, draft_id)
-      values (ib.ledger_id, public.f_uuid(f, 'stage_id'), coalesce(public.f_date(f, 'work_date'), current_date), (f ->> 'headcount')::smallint,
+      values (ib.ledger_id, public.f_uuid(f, 'stage_id'), coalesce(public.f_date(f, 'work_date'), public.today_tehran()), (f ->> 'headcount')::smallint,
               coalesce(public.f_text(f, 'description'), ''), (f ->> 'wage_rial')::bigint, public.f_uuid(f, 'crew_person_id'),
               tx_id is not null, tx_id, ob_id, d.id)
       returning id into new_id;
@@ -202,14 +210,32 @@ begin
       update public.stages set
         progress_pct = coalesce((f ->> 'progress_pct')::smallint, progress_pct),
         status = coalesce((f ->> 'status')::public.stage_status, status),
-        started_on = coalesce(started_on, case when coalesce((f ->> 'status'), '') in ('in_progress', 'done') then current_date end),
-        finished_on = case when (f ->> 'status') = 'done' then coalesce(finished_on, current_date) else finished_on end
+        started_on = coalesce(started_on, case when coalesce((f ->> 'status'), '') in ('in_progress', 'done') then public.today_tehran() end),
+        finished_on = case when (f ->> 'status') = 'done' then coalesce(finished_on, public.today_tehran()) else finished_on end
       where id = public.f_uuid(f, 'stage_id');
+
+    when 'cheque' then
+      amt := public.f_money(f, 'amount_rial');
+      perform public.require(public.f_text(f, 'direction') in ('issued', 'received'), 'issued or received?');
+      perform public.require(public.f_uuid(f, 'person_id') is not null, 'whose cheque?');
+      perform public.require(public.f_date(f, 'due_date') is not null, 'cheque needs a due date');
+      perform public.require(public.f_text(f, 'direction') = 'received' or public.f_uuid(f, 'account_id') is not null, 'which account is the cheque drawn on?');
+      perform public.require(public.f_uuid(f, 'account_id') is null or public.can_use_account(public.f_uuid(f, 'account_id'), ib.ledger_id), 'this account cannot be used here');
+      perform public.check_refs(ib.ledger_id, public.f_uuid(f, 'stage_id'), public.f_uuid(f, 'person_id'));
+      insert into public.cheques (ledger_id, direction, amount_rial, person_id, due_date, account_id, bank, sayad_no, stage_id, settles, description, draft_id)
+      values (ib.ledger_id, public.f_text(f, 'direction')::public.cheque_direction, amt, public.f_uuid(f, 'person_id'), public.f_date(f, 'due_date'),
+              public.f_uuid(f, 'account_id'), public.f_text(f, 'bank'), public.f_text(f, 'sayad_no'), public.f_uuid(f, 'stage_id'),
+              coalesce(public.f_bool(f, 'settles'), false),
+              coalesce(public.f_text(f, 'description'),
+                       (case when public.f_text(f, 'direction') = 'issued' then 'چک به ' else 'چک از ' end)
+                       || coalesce((select full_name from public.people where id = public.f_uuid(f, 'person_id')), '')), d.id)
+      returning id into new_id;
+      created := created || jsonb_build_object('table', 'cheques', 'id', new_id);
 
     when 'daily_note' then
       perform public.check_refs(ib.ledger_id, public.f_uuid(f, 'stage_id'), null);
       insert into public.daily_notes (ledger_id, note_date, body, stage_id, draft_id)
-      values (ib.ledger_id, coalesce(public.f_date(f, 'note_date'), current_date), public.f_text(f, 'body'), public.f_uuid(f, 'stage_id'), d.id)
+      values (ib.ledger_id, coalesce(public.f_date(f, 'note_date'), public.today_tehran()), public.f_text(f, 'body'), public.f_uuid(f, 'stage_id'), d.id)
       returning id into new_id;
       created := created || jsonb_build_object('table', 'daily_notes', 'id', new_id);
 
@@ -296,6 +322,10 @@ begin
         when 'work_logs' then update public.work_logs set voided_at = now(), voided_by = auth.uid() where id = (c ->> 'id')::uuid and draft_id = d.id and ledger_id = ib.ledger_id;
         when 'daily_notes' then update public.daily_notes set voided_at = now(), voided_by = auth.uid() where id = (c ->> 'id')::uuid and draft_id = d.id and ledger_id = ib.ledger_id;
         when 'documents' then update public.documents set hidden_at = now() where id = (c ->> 'id')::uuid and draft_id = d.id and ledger_id = ib.ledger_id;
+        when 'cheques' then
+          perform public.require(not exists (select 1 from public.cheques where id = (c ->> 'id')::uuid and status <> 'pending'),
+                                 'the cheque is no longer pending; change the cheque instead of undoing');
+          update public.cheques set voided_at = now() where id = (c ->> 'id')::uuid and draft_id = d.id and ledger_id = ib.ledger_id;
         else null;
       end case;
       -- the files of this item are no longer linked to what was undone

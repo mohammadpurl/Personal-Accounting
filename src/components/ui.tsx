@@ -216,6 +216,9 @@ export function DatePicker({ value, onChange, labelledBy, warn, invalid, placeho
 
 // ---------- sheet (modal) ----------
 
+// windows open right now, oldest first: Escape belongs to the last one
+const OPEN_SHEETS: object[] = [];
+
 /** A modal window. `returnFocus` is where focus goes on close when the button that opened it is gone or hidden. */
 export function Sheet({ open, onClose, children, labelledBy = 'sheetTitle', returnFocus }: { open: boolean; onClose: () => void; children: ReactNode; labelledBy?: string; returnFocus?: string }) {
   const reduce = useReducedMotion();
@@ -232,14 +235,19 @@ export function Sheet({ open, onClose, children, labelledBy = 'sheetTitle', retu
     const wasInert = page.map((el) => el?.inert ?? false);
     page.forEach((el) => { if (el) el.inert = true; });
     document.body.setAttribute('data-sheet', ''); // the shell leaves the page inert while this is set
+    const token = {};
+    OPEN_SHEETS.push(token);
     document.body.style.overflow = 'hidden';
     requestAnimationFrame(() => {
       if (sheet.current) sheet.current.scrollTop = 0;
-      (sheet.current?.querySelector<HTMLElement>('[data-autofocus]') ?? sheet.current?.querySelector<HTMLElement>('button'))?.focus({ preventScroll: true });
+      (sheet.current?.querySelector<HTMLElement>('[data-autofocus-first]') ?? sheet.current?.querySelector<HTMLElement>('[data-autofocus]') ?? sheet.current?.querySelector<HTMLElement>('button'))?.focus({ preventScroll: true });
     });
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { e.preventDefault(); close.current(); }
-      if (e.key === 'Tab' && sheet.current) {
+      if (e.key === 'Escape') {
+        if (OPEN_SHEETS[OPEN_SHEETS.length - 1] !== token) return; // a window opened on top of this one closes first
+        e.preventDefault(); close.current();
+      }
+      if (e.key === 'Tab' && sheet.current && OPEN_SHEETS[OPEN_SHEETS.length - 1] === token) {
         const f = [...sheet.current.querySelectorAll<HTMLElement>('button, input, textarea, [tabindex="0"]')].filter((el) => !(el as HTMLButtonElement).disabled && el.offsetParent !== null);
         if (!f.length) return;
         const i = f.indexOf(document.activeElement as HTMLElement), inside = sheet.current.contains(document.activeElement);
@@ -250,9 +258,10 @@ export function Sheet({ open, onClose, children, labelledBy = 'sheetTitle', retu
     document.addEventListener('keydown', onKey);
     return () => {
       document.removeEventListener('keydown', onKey);
-      document.body.removeAttribute('data-sheet');
+      OPEN_SHEETS.splice(OPEN_SHEETS.indexOf(token), 1);
+      if (!OPEN_SHEETS.length) document.body.removeAttribute('data-sheet');
       page.forEach((el, i) => { if (el) el.inert = wasInert[i]; });
-      document.body.style.overflow = '';
+      if (!OPEN_SHEETS.length) document.body.style.overflow = '';
       window.dispatchEvent(new Event('sheet-closed')); // the shell re-applies the drawer's own inert rules
       const b = back.current as HTMLElement | null;
       if (b?.isConnected && !b.closest('[inert]') && b.offsetParent !== null) b.focus();

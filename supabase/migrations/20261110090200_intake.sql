@@ -6,7 +6,7 @@ create type public.inbox_status as enum ('queued', 'processing', 'ready', 'confi
 create type public.job_status as enum ('pending', 'running', 'done', 'failed');
 create type public.draft_kind as enum (
   'payment', 'receipt', 'transfer', 'work_log', 'stage_progress', 'daily_note', 'document',
-  'invoice', 'reminder', 'admin_step', 'inspection'
+  'invoice', 'reminder', 'admin_step', 'inspection', 'cheque'
 );
 create type public.draft_status as enum ('pending', 'accepted', 'dropped');
 
@@ -82,7 +82,7 @@ for each row execute function public.tg_media_immutable();
 -- Which records each file is linked to (transaction, document version, work log, ...).
 create table public.media_links (
   media_id uuid not null references public.media (id),
-  target_table text not null check (target_table in ('transactions', 'work_logs', 'documents', 'document_versions', 'obligations', 'daily_notes', 'stages')),
+  target_table text not null check (target_table in ('transactions', 'work_logs', 'documents', 'document_versions', 'obligations', 'daily_notes', 'stages', 'cheques')),
   target_id uuid not null,
   created_at timestamptz not null default now(),
   primary key (media_id, target_table, target_id)

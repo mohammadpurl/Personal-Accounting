@@ -648,3 +648,97 @@ describe('round-3 findings', () => {
     expect(await rows(db, `select phone from profiles where id = $1 and phone is not null`, [u])).toHaveLength(0);
   });
 });
+
+describe('cheques', () => {
+  it('a cheque card waits in «چک‌ها»; clearing moves the money, bouncing takes it back; only money roles see it', async () => {
+    const x = await inboxWithDrafts([{ kind: 'cheque', fields: { direction: 'issued', amount_rial: '900000000', person_id: omid, due_date: '2026-11-26', account_id: bank, sayad_no: '1405090500123456', stage_id: frame } }]);
+    await asUser(db, OWNER, async () => { await db.query(`select confirm_inbox($1, $2)`, [x.inbox, x.drafts]); });
+    const id = (await one<{ id: string }>(db, `select id from cheques where draft_id = $1`, [x.drafts[0]])).id;
+    const before = await balance(bank);
+    await asUser(db, FOREMAN, async () => { expect(await rows(db, `select * from cheques`)).toHaveLength(0); });
+    await asUser(db, ACCOUNTANT, async () => {
+      await expect(db.query(`update cheques set status = 'cleared' where id = $1`, [id])).rejects.toThrow(/permission denied/);
+      await db.query(`select set_cheque_status($1, 'cleared')`, [id]);
+    });
+    expect(await balance(bank)).toBe(before - 900000000n);
+    await asUser(db, OWNER, async () => {
+      await expect(db.query(`update cheques set amount_rial = 1 where id = $1`, [id])).rejects.toThrow(/cleared cheque/);
+      await expect(db.query(`select undo_inbox($1)`, [x.inbox])).rejects.toThrow(/no longer pending/);
+      await db.query(`select set_cheque_status($1, 'bounced')`, [id]);
+    });
+    expect(await balance(bank)).toBe(before);
+    await asUser(db, FOREMAN, async () => {
+      await expect(db.query(`select set_cheque_status($1, 'cleared')`, [id])).rejects.toThrow(/only the owner or the accountant/);
+    });
+  });
+  it('an issued cheque needs its account; the same Sayad number is not recorded twice', async () => {
+    const bad = await inboxWithDrafts([{ kind: 'cheque', fields: { direction: 'issued', amount_rial: '1000', person_id: omid, due_date: '2026-12-01' } }]);
+    await asUser(db, OWNER, async () => {
+      await expect(db.query(`select confirm_inbox($1, $2)`, [bad.inbox, bad.drafts])).rejects.toThrow(/drawn on/);
+      await db.query(`insert into cheques (ledger_id, direction, amount_rial, person_id, due_date, sayad_no) values ($1, 'received', 5, $2, '2026-12-01', '1111222233334444')`, [project, omid]);
+      await expect(db.query(`insert into cheques (ledger_id, direction, amount_rial, person_id, due_date, sayad_no) values ($1, 'received', 5, $2, '2026-12-01', '1111222233334444')`, [project, omid]))
+        .rejects.toThrow(/duplicate/);
+    });
+  });
+});
+
+describe('cheque lock', () => {
+  it('a client cannot switch off the lock on a cleared cheque', async () => {
+    const id = await asUser(db, OWNER, async () => {
+      const c = await one<{ id: string }>(db, `insert into cheques (ledger_id, direction, amount_rial, person_id, due_date, account_id) values ($1, 'issued', 1000, $2, '2026-12-01', $3) returning id`, [project, omid, bank]);
+      await db.query(`select set_cheque_status($1, 'cleared')`, [c.id]);
+      return c.id;
+    });
+    await asUser(db, OWNER, async () => {
+      await db.query(`select set_config('app.cheque_status', 'on', false)`);
+      await expect(db.query(`update cheques set amount_rial = 1 where id = $1`, [id])).rejects.toThrow(/cleared cheque/);
+    });
+  });
+});
+
+describe('cheque review round', () => {
+  it('a cheque cannot be inserted already cleared, nor with a foreign transaction to void', async () => {
+    const strangerTx = await asService(db, async () => (await one<{ id: string }>(db, `select id from transactions where ledger_id <> $1 limit 1`, [project]))?.id);
+    await asUser(db, ACCOUNTANT, async () => {
+      await expect(db.query(`insert into cheques (ledger_id, direction, amount_rial, person_id, due_date, account_id, status, transaction_id) values ($1, 'issued', 5, $2, '2026-12-01', $3, 'cleared', $4)`,
+        [project, omid, bank, strangerTx ?? null])).rejects.toThrow(/permission denied/);
+    });
+  });
+  it('the transaction of a cleared cheque is changed only through the cheque', async () => {
+    const { id, tx } = await asUser(db, OWNER, async () => {
+      const c = await one<{ id: string }>(db, `insert into cheques (ledger_id, direction, amount_rial, person_id, due_date, account_id) values ($1, 'issued', 7000, $2, '2026-12-02', $3) returning id`, [project, omid, bank]);
+      const t = await one<{ tx: string }>(db, `select set_cheque_status($1, 'cleared')::text tx`, [c.id]);
+      return { id: c.id, tx: t.tx };
+    });
+    await asUser(db, ACCOUNTANT, async () => {
+      await expect(db.query(`update transactions set amount_rial = -1 where id = $1`, [tx])).rejects.toThrow(/belongs to a cheque/);
+      await expect(db.query(`update transactions set voided_at = now() where id = $1`, [tx])).rejects.toThrow(/belongs to a cheque/);
+      await db.query(`select set_cheque_status($1, 'pending')`, [id]);
+      expect((await one<{ v: boolean }>(db, `select voided_at is not null v from transactions where id = $1`, [tx])).v).toBe(true);
+      expect((await rows(db, `select * from audit_log where table_name = 'cheques'`)).length).toBeGreaterThan(0);
+    });
+  });
+  it('the same Sayad number may sit in two different ledgers', async () => {
+    await asUser(db, OWNER, async () => {
+      await db.query(`insert into cheques (ledger_id, direction, amount_rial, person_id, due_date, sayad_no) values ($1, 'received', 5, $2, '2026-12-01', '9999888877776666')`, [project, omid]);
+      await db.query(`insert into cheques (ledger_id, direction, amount_rial, person_id, due_date, sayad_no) values ($1, 'received', 5, $2, '2026-12-01', '9999888877776666')`, [personal, omid]);
+    });
+  });
+});
+
+describe('cheque link survives reopening', () => {
+  it('the old transaction of a reopened cheque cannot be restored, so the money is never counted twice', async () => {
+    const { id, tx } = await asUser(db, OWNER, async () => {
+      const c = await one<{ id: string }>(db, `insert into cheques (ledger_id, direction, amount_rial, person_id, due_date, account_id) values ($1, 'issued', 1000, $2, '2026-12-03', $3) returning id`, [project, omid, bank]);
+      const t = await one<{ tx: string }>(db, `select set_cheque_status($1, 'cleared')::text tx`, [c.id]);
+      await db.query(`select set_cheque_status($1, 'pending')`, [c.id]);
+      return { id: c.id, tx: t.tx };
+    });
+    await asUser(db, OWNER, async () => {
+      await expect(db.query(`update transactions set voided_at = null where id = $1`, [tx])).rejects.toThrow(/belongs to a cheque/);
+      await expect(db.query(`update transactions set occurred_on = '2026-01-01' where id = $1`, [tx])).rejects.toThrow(/belongs to a cheque/);
+      await expect(db.query(`insert into transactions (ledger_id, account_id, occurred_on, amount_rial, cheque_id) values ($1, $2, current_date, -5, $3)`, [project, bank, id]))
+        .rejects.toThrow(/permission denied/);
+    });
+  });
+});

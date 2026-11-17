@@ -82,6 +82,22 @@ export const draftFields = {
     progress_pct: z.number({ error: 'درصد را بنویسید' }).int().min(0, { error: 'درصد بین ۰ تا ۱۰۰ است' }).max(100, { error: 'درصد بین ۰ تا ۱۰۰ است' }).optional(),
     status: z.enum(['todo', 'in_progress', 'done', 'skipped']).optional(),
   }).refine((f) => f.progress_pct !== undefined || f.status !== undefined, { error: 'درصد پیشرفت را بنویسید', path: ['progress_pct'] }),
+  cheque: z
+    .object({
+      direction: z.enum(['issued', 'received'], { error: 'چک را صادر کردید یا گرفتید؟' }),
+      amount_rial: rial,
+      person_id: pick('طرف چک'),
+      due_date: z.iso.date({ error: 'تاریخ سررسید را انتخاب کنید' }),
+      account_id: uuid.optional(),
+      bank: z.string().optional(),
+      sayad_no: z.string().regex(/^\d{16}$/, { error: 'شمارهٔ صیادی ۱۶ رقم است' }).optional(),
+      stage_id: uuid.optional(),
+      settles: z.boolean().optional(), // an issued cheque for a debt already owed: not a new cost when it clears
+      description: z.string().optional(),
+    })
+    .superRefine((f, ctx) => {
+      if (f.direction === 'issued' && !f.account_id) ctx.addIssue({ code: 'custom', path: ['account_id'], message: 'چک از کدام حساب است؟' });
+    }),
   daily_note: z.object({ body: text('متن یادداشت'), note_date: isoDate.optional(), stage_id: uuid.optional() }),
   document: z.object({
     title: text('عنوان سند'),
@@ -176,6 +192,14 @@ export function describeEffect<K extends DraftKind>(kind: K, f: DraftFieldsOf<K>
     case 'daily_note': {
       const n = f as DraftFieldsOf<'daily_note'>;
       return `در دفتر روزانهٔ ${formatJalali(n.note_date ?? ctx.today, { withYear: false })} ثبت می‌شود.`;
+    }
+    case 'cheque': {
+      const c = f as DraftFieldsOf<'cheque'>;
+      const who = ctx.people[c.person_id]?.name ?? 'طرف چک';
+      const due = formatJalali(c.due_date, { withYear: false });
+      return c.direction === 'issued'
+        ? `چک ${formatShortToman(BigInt(c.amount_rial))} تومانی به ${who} با سررسید ${due} در «چک‌ها» ثبت می‌شود. تا پاس نشود از ${accountPhrase(ctx, c.account_id ?? '')} کم نمی‌شود.`
+        : `چک ${formatShortToman(BigInt(c.amount_rial))} تومانی از ${who} با سررسید ${due} در «چک‌ها» ثبت می‌شود. تا وصول نشود به حساب اضافه نمی‌شود.`;
     }
     case 'document': {
       const d = f as DraftFieldsOf<'document'>;

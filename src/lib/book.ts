@@ -20,6 +20,7 @@ export interface Transaction {
   id: string; ledgerId: string; accountId: string; occurredOn: string; amountRial: bigint; isCost: boolean;
   transferId?: string; personId?: string; stageId?: string; description: string; method?: string;
   source: Source; draftId?: string; voided: boolean; history: string[];
+  chequeId?: string; // made by clearing this cheque: changes only through the cheque, even after it was voided
 }
 export interface Obligation {
   id: string; ledgerId: string; personId: string; stageId?: string; occurredOn: string; amountRial: bigint;
@@ -36,6 +37,13 @@ export interface DocumentRec {
 }
 export interface DailyNote { id: string; ledgerId: string; noteDate: string; body: string; stageId?: string; draftId?: string; voided: boolean }
 export interface Inspection { id: string; who: string; initials: string; meta: string; open: boolean; text: string; source: string }
+export interface Cheque {
+  id: string; ledgerId: string; direction: 'issued' | 'received'; amountRial: bigint; personId: string; dueDate: string;
+  accountId?: string; bank?: string; sayadNo?: string; stageId?: string; settles: boolean; description: string;
+  status: 'pending' | 'cleared' | 'bounced' | 'cancelled'; transactionId?: string; draftId?: string; voided: boolean; history: string[];
+}
+/** What happened, newest first: the dashboard's live feed. */
+export interface Activity { id: string; at: string; text: string; href?: string; tone: 'pos' | 'neg' | 'info' | 'warn' | 'accent' }
 export interface InterLedger { id: string; debtorLedgerId: string; creditorLedgerId: string; amountRial: bigint; transactionId: string; voided: boolean }
 
 export interface DraftCard {
@@ -45,8 +53,8 @@ export interface DraftCard {
   created?: { table: string; id: string }[]; stagePrev?: Pick<Stage, 'status' | 'progressPct'>;
 }
 export interface InboxItem {
-  id: string; ledgerId: string; kind: 'voice' | 'receipt' | 'invoice'; channel: 'bale' | 'telegram' | 'web';
-  title: string; receivedLabel: string; durationLabel?: string; transcript?: TranscriptPart[]; ocr?: string;
+  id: string; ledgerId: string; kind: 'voice' | 'receipt' | 'invoice' | 'cheque' | 'text'; channel: 'bale' | 'telegram' | 'web';
+  title: string; receivedLabel: string; durationLabel?: string; transcript?: TranscriptPart[]; ocr?: string; text?: string;
   status: 'processing' | 'ready' | 'confirmed' | 'rejected'; chips: string[]; drafts: DraftCard[];
 }
 
@@ -58,6 +66,7 @@ export interface Book {
   ledgers: Ledger[]; accounts: Account[]; people: Person[]; stages: Stage[];
   transactions: Transaction[]; obligations: Obligation[]; workLogs: WorkLog[]; documents: DocumentRec[];
   dailyNotes: DailyNote[]; inspections: Inspection[]; interLedger: InterLedger[]; inbox: InboxItem[];
+  cheques: Cheque[]; activity: Activity[];
 }
 
 let seq = 0;
@@ -126,7 +135,7 @@ export function confirmInbox(b: Book, inboxId: string, accept: string[], edits: 
   if (!item || item.status !== 'ready') throw new Error('این مورد دیگر منتظر تأیید نیست');
   const next: Book = structuredClone(b);
   const ib = next.inbox.find((i) => i.id === inboxId)!;
-  const source: Source = ib.kind;
+  const source: Source = ib.kind === 'cheque' ? 'receipt' : ib.kind === 'text' ? 'manual' : ib.kind;
   const day = formatJalali(b.today, { withYear: false });
   const hist = [`${day} · ساخته‌شده از ${ib.title}`, `${day} · تأیید شد`];
   const who = (id: unknown) => next.people.find((p) => p.id === id)?.fullName;
@@ -184,6 +193,14 @@ export function confirmInbox(b: Book, inboxId: string, accept: string[], edits: 
       d.stagePrev = { status: s.status, progressPct: s.progressPct };
       if (f.progress_pct !== undefined) s.progressPct = f.progress_pct as number;
       if (f.status) s.status = f.status as Stage['status'];
+    } else if (d.kind === 'cheque') {
+      const c: Cheque = {
+        id: newId('chq'), ledgerId: L, direction: f.direction as Cheque['direction'], amountRial: BigInt(f.amount_rial as string), personId: f.person_id as string,
+        dueDate: f.due_date as string, accountId: f.account_id as string | undefined, bank: f.bank as string | undefined, sayadNo: f.sayad_no as string | undefined,
+        stageId: f.stage_id as string | undefined, settles: Boolean(f.settles), description: (f.description as string) || (f.direction === 'issued' ? `چک به ${who(f.person_id) ?? ''}` : `چک از ${who(f.person_id) ?? ''}`).trim(),
+        status: 'pending', draftId: d.id, voided: false, history: hist,
+      };
+      next.cheques.unshift(c); created.push({ table: 'cheques', id: c.id });
     } else if (d.kind === 'daily_note') {
       const n: DailyNote = { id: newId('dn'), ledgerId: L, noteDate: (f.note_date as string) ?? b.today, body: f.body as string, stageId: f.stage_id as string | undefined, draftId: d.id, voided: false };
       next.dailyNotes.unshift(n); created.push({ table: 'daily_notes', id: n.id });
@@ -227,6 +244,11 @@ export function undoInbox(b: Book, inboxId: string): Book {
       if (c.table === 'work_logs') { const w = next.workLogs.find((x) => x.id === c.id); if (w) w.voided = true; }
       if (c.table === 'daily_notes') { const n = next.dailyNotes.find((x) => x.id === c.id); if (n) n.voided = true; }
       if (c.table === 'documents') { const doc = next.documents.find((x) => x.id === c.id); if (doc) doc.hidden = true; }
+      if (c.table === 'cheques') {
+        const q = next.cheques.find((x) => x.id === c.id);
+        if (q && q.status !== 'pending') throw new Error('این چک دیگر در جریان نیست؛ به‌جای برگرداندن، خود چک را ویرایش کنید');
+        if (q) q.voided = true;
+      }
     }
     if (d.kind === 'stage_progress' && d.stagePrev) {
       const s = next.stages.find((x) => x.id === d.fields.stage_id);
@@ -261,6 +283,10 @@ export function addStage(b: Book, ledgerId: string, s: { name: string; phase: St
   return next;
 }
 
+/** The cheque whose clearing created this transaction, if any. */
+export const chequeOf = (b: Book, txId: string) =>
+  b.cheques.find((c) => c.transactionId === txId && !c.voided) ?? (b.transactions.find((t) => t.id === txId)?.chequeId ? b.cheques.find((c) => c.id === b.transactions.find((t) => t.id === txId)!.chequeId) : undefined);
+
 /** Both legs of a transfer change together (the database refuses a transfer whose legs do not sum to zero). */
 const legsOf = (b: Book, t: Transaction) => (t.transferId ? b.transactions.filter((x) => x.transferId === t.transferId) : [t]);
 
@@ -270,6 +296,7 @@ export function editTransaction(b: Book, id: string, patch: { description?: stri
   const t = next.transactions.find((x) => x.id === id);
   if (!t) throw new Error('این تراکنش پیدا نشد');
   if (t.voided) throw new Error('تراکنش حذف‌شده را نمی‌شود ویرایش کرد');
+  if (chequeOf(b, id)) throw new Error('این تراکنش از پاس شدن یک چک آمده؛ خود چک را عوض کنید');
   const legs = legsOf(next, t);
   if (patch.accountId !== undefined && legs.some((x) => x !== t && x.accountId === patch.accountId)) throw new Error('مبدأ و مقصد انتقال نمی‌تواند یک حساب باشد');
   const changes: string[] = [];
@@ -294,11 +321,47 @@ export function setTransactionVoided(b: Book, id: string, voided: boolean): Book
   const next: Book = structuredClone(b);
   const t = next.transactions.find((x) => x.id === id);
   if (!t) throw new Error('این تراکنش پیدا نشد');
+  if (chequeOf(b, id)) throw new Error('این تراکنش از پاس شدن یک چک آمده؛ خود چک را عوض کنید');
   const line = `${formatJalali(b.today, { withYear: false })} · ${voided ? 'حذف شد' : 'برگردانده شد'}`;
   for (const x of legsOf(next, t)) {
     x.voided = voided;
     x.history = [...x.history, line];
     syncInterLedger(next, x);
   }
+  return next;
+}
+
+/** A cheque clears, bounces or is cancelled. Clearing moves the money (like set_cheque_status in the database);
+ *  moving a cleared cheque to any other status voids that money movement. */
+export function setChequeStatus(b: Book, id: string, status: Cheque['status'], accountId?: string): Book {
+  const next: Book = structuredClone(b);
+  const c = next.cheques.find((x) => x.id === id && !x.voided);
+  if (!c) throw new Error('این چک پیدا نشد');
+  if (c.status === status) return next;
+  const day = formatJalali(b.today, { withYear: false });
+  if (c.transactionId) {
+    const t = next.transactions.find((x) => x.id === c.transactionId);
+    if (t) { t.voided = true; syncInterLedger(next, t); }
+    c.transactionId = undefined;
+  }
+  if (status === 'cleared') {
+    const acc = accountId ?? c.accountId;
+    if (!acc) throw new Error('حسابی را که چک به آن خورد انتخاب کنید');
+    const who = next.people.find((p) => p.id === c.personId)?.fullName ?? '';
+    const t: Transaction = {
+      id: newId('tx'), ledgerId: c.ledgerId, accountId: acc, occurredOn: b.today,
+      amountRial: c.direction === 'issued' ? -c.amountRial : c.amountRial,
+      isCost: c.direction === 'issued' && !c.settles, personId: c.personId, stageId: c.direction === 'issued' && !c.settles ? c.stageId : undefined,
+      description: c.direction === 'issued' ? `پاس شدن چک به ${who}` : `وصول چک از ${who}`, method: 'چک', source: 'manual', voided: false, chequeId: c.id,
+      history: [`${day} · از چک ${c.sayadNo ? `صیادی ${c.sayadNo}` : 'ثبت‌شده'} ساخته شد`],
+    };
+    next.transactions.unshift(t);
+    syncInterLedger(next, t);
+    c.transactionId = t.id;
+    c.accountId = acc;
+  }
+  const LABEL = { pending: 'در جریان', cleared: c.direction === 'issued' ? 'پاس شد' : 'وصول شد', bounced: 'برگشت خورد', cancelled: 'باطل شد' } as const;
+  c.status = status;
+  c.history = [...c.history, `${day} · ${LABEL[status]}`];
   return next;
 }

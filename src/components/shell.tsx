@@ -1,35 +1,42 @@
 'use client';
-// The frame around every screen: moving glass background, sidebar (collapsible on desktop, a drawer on phones)
-// with a sliding pill for the active item, top bar, quick-capture button, and the Settings window.
+// The frame around every page: moving glass background, sidebar (collapsible on desktop, a drawer on phones)
+// with a sliding pill on the current page, top bar with the page title, the assistant button, and Settings.
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { animate, motion, MotionConfig, stagger, useReducedMotion } from 'motion/react';
 import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { BACKDROP } from './backdrop-markup';
 import { Dropdown, EASE, Icon, Sheet, SheetHead, useToast } from './ui';
-import { CaptureSheet } from './review';
+import Link from 'next/link';
+import { usePathname, useRouter } from 'next/navigation';
+import { useSheets } from './sheets-context';
 import { useBook } from '@/state/book';
+import { setPendingSearch } from '@/state/handoff';
+import { addDays } from '@/lib/jalali';
 import { formatJalali } from '@/lib/jalali';
 import { toPersianDigits } from '@/lib/money';
 import { includesFa, initialsFa } from '@/lib/text';
 
 if (typeof window !== 'undefined') gsap.registerPlugin(ScrollTrigger);
 
-const NAV_MAIN = [
-  { href: '#top', icon: 'grid', label: 'داشبورد' },
-  { href: '#inbox', icon: 'inbox', label: 'منتظر تأیید', badge: true },
-  { href: '#transactions', icon: 'swap', label: 'واریز و برداشت' },
-  { href: '#people', icon: 'users', label: 'اشخاص' },
+type NavItem = { href?: string; soon?: string; icon: string; label: string; badge?: 'inbox' | 'cheques'; live?: boolean };
+const NAV_MAIN: NavItem[] = [
+  { href: '/', icon: 'grid', label: 'داشبورد' },
+  { href: '/inbox', icon: 'inbox', label: 'منتظر تأیید', badge: 'inbox' },
+  { href: '/transactions', icon: 'swap', label: 'حساب‌ها و تراکنش‌ها' },
+  { href: '/cheques', icon: 'receipt', label: 'چک‌ها', badge: 'cheques' },
+  { href: '/people', icon: 'users', label: 'اشخاص' },
 ];
-const NAV_PROJECT = [
-  { href: '#stages', icon: 'layers', label: 'مراحل ساخت', live: true },
-  { soon: 'صفحهٔ کارکرد کارگرها به‌زودی اضافه می‌شود', icon: 'hat', label: 'کارکرد کارگرها' },
-  { href: '#docs', icon: 'folder', label: 'اسناد و نقشه‌ها' },
-  { href: '#notes', icon: 'check-board', label: 'یادداشت‌های روزانه' },
-  { soon: 'بایگانی همهٔ ویس‌ها و عکس‌ها به‌زودی اضافه می‌شود', icon: 'clip', label: 'بایگانی' },
+const NAV_PROJECT: NavItem[] = [
+  { href: '/stages', icon: 'layers', label: 'مراحل ساخت', live: true },
+  { href: '/workers', icon: 'hat', label: 'کارکرد کارگرها' },
+  { href: '/documents', icon: 'folder', label: 'اسناد و نقشه‌ها' },
+  { href: '/notes', icon: 'check-board', label: 'یادداشت‌ها' },
+  { href: '/archive', icon: 'clip', label: 'بایگانی' },
+  { href: '/guide', icon: 'msg', label: 'راهنمای ثبت' },
   { soon: 'گزارش‌ها به‌زودی اضافه می‌شوند', icon: 'bars', label: 'گزارش‌ها' },
 ];
-const SPY = ['inbox', 'stages', 'people', 'transactions', 'notes', 'docs'];
+const TITLES: Record<string, string> = Object.fromEntries([...NAV_MAIN, ...NAV_PROJECT].filter((n) => n.href).map((n) => [n.href!, n.label]));
 
 const HUES = [
   { k: 'blue', v: 'آبی یخی', c: ['#2563eb', '#7c3aed', '#0891b2'] },
@@ -78,9 +85,12 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [drawerWanted, setDrawer] = useState(false);
   const drawer = narrow && drawerWanted;
   const [filter, setFilter] = useState('');
-  const [active, setActive] = useState('#top');
+  const pathname = usePathname();
+  const router = useRouter();
+  const active = pathname;
+  const title = TITLES[pathname] ?? 'دفتر ساختمان';
+  const { openAssistant } = useSheets();
   const [settings, setSettings] = useState(false);
-  const [capture, setCapture] = useState(false);
   const topbar = useRef<HTMLElement>(null);
   // entrances: the top bar drops in and the menu items slide in one after another (Motion)
   useEffect(() => {
@@ -93,9 +103,10 @@ export function AppShell({ children }: { children: ReactNode }) {
     return () => { a?.stop(); b.stop(); };
   }, [reduce]);
   const sidebar = useRef<HTMLElement>(null), scroller = useRef<HTMLDivElement>(null), pill = useRef<HTMLSpanElement>(null);
-  const spyLock = useRef(0); // after a menu click, the clicked item stays active until that scroll ends
   const menuBtn = useRef<HTMLButtonElement>(null), blobs = useRef<HTMLDivElement>(null);
   const pending = book.inbox.filter((i) => i.status === 'ready').length;
+  const chequesDue = book.cheques.filter((c) => !c.voided && c.status === 'pending' && c.dueDate <= addDays(book.today, 7)).length;
+  const badges = { inbox: pending, cheques: chequesDue };
 
   // drawer: page is inert while open; closed drawer is inert on phones. While a window is open it owns inert.
   useEffect(() => {
@@ -125,11 +136,6 @@ export function AppShell({ children }: { children: ReactNode }) {
     addEventListener('keydown', k);
     return () => removeEventListener('keydown', k);
   }, [drawer]);
-  useEffect(() => {
-    const o = () => setCapture(true);
-    addEventListener('open-capture', o);
-    return () => removeEventListener('open-capture', o);
-  }, []);
 
   // Motion: controls shrink a little while pressed; the glass catches a soft light under the pointer
   useEffect(() => {
@@ -179,6 +185,9 @@ export function AppShell({ children }: { children: ReactNode }) {
     else gsap.set(p, { y: li.offsetTop, height: a.offsetHeight });
   }, [reduce]);
   useEffect(() => { movePill(true); }, [active, movePill]);
+  // after moving to another page, focus its title (not on first load, so «رفتن به محتوا» stays the first Tab stop)
+  const firstPath = useRef(pathname);
+  useEffect(() => { if (pathname !== firstPath.current) document.getElementById('pageTitle')?.focus({ preventScroll: true }); }, [pathname]);
   useEffect(() => { movePill(false); const t = setTimeout(() => movePill(true), 380); return () => clearTimeout(t); }, [collapsed, filter, movePill]);
   useEffect(() => {
     const r = () => movePill(false);
@@ -191,41 +200,6 @@ export function AppShell({ children }: { children: ReactNode }) {
     return () => { tw.scrollTrigger?.kill(); tw.kill(); };
   }, [reduce]);
 
-  // scroll spy: of the sections crossing the band, the one nearest the top wins (two panels can sit side by side);
-  // right after a menu click the clicked item stays until that scroll ends.
-  useEffect(() => {
-    const inBand = new Set<string>();
-    const decide = () => {
-      if (Date.now() < spyLock.current) return;
-      if (scrollY < 80) { setActive('#top'); return; }
-      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) { setActive('#docs'); return; }
-      // of the sections crossing the band, the one that started most recently (largest top above the band) wins,
-      // so a short panel beside a tall one still gets its turn
-      const line = innerHeight * 0.4;
-      let best: string | null = null, bestTop = -Infinity;
-      for (const id of SPY) {
-        if (!inBand.has(id)) continue;
-        const top = document.getElementById(id)!.getBoundingClientRect().top;
-        if (top <= line && top > bestTop + 1) { best = id; bestTop = top; }
-      }
-      if (best) setActive(`#${best}`);
-    };
-    const io = new IntersectionObserver((entries) => {
-      entries.forEach((en) => { if (en.isIntersecting) inBand.add(en.target.id); else inBand.delete(en.target.id); });
-      decide();
-    }, { rootMargin: '-35% 0px -60% 0px' });
-    SPY.forEach((id) => { const el = document.getElementById(id); if (el) io.observe(el); });
-    // a menu click holds its item until the user scrolls by hand
-    const release = () => { spyLock.current = 0; };
-    const keys = (e: KeyboardEvent) => { if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', ' '].includes(e.key)) release(); };
-    addEventListener('scroll', decide, { passive: true });
-    addEventListener('wheel', release, { passive: true });
-    addEventListener('touchmove', release, { passive: true });
-    addEventListener('pointerdown', release, { passive: true }); // scrollbar drags; a menu click sets the lock again right after
-    addEventListener('keydown', keys);
-    return () => { io.disconnect(); removeEventListener('scroll', decide); removeEventListener('wheel', release); removeEventListener('touchmove', release); removeEventListener('pointerdown', release); removeEventListener('keydown', keys); };
-  }, []);
-
   const toggleCollapsed = () => { store('sb-collapsed', collapsed ? '0' : '1'); announce(); };
   const applyHue = (k: string) => { root().setAttribute('data-hue', k); store('hue', k); announce(); };
   const applyMode = (k: Mode) => {
@@ -235,21 +209,21 @@ export function AppShell({ children }: { children: ReactNode }) {
   };
   const toggleDark = () => applyMode(isDark() ? 'light' : 'dark');
 
-  const navItem = (item: { href?: string; soon?: string; icon: string; label: string; badge?: boolean; live?: boolean }, i: number) => {
+  const navItem = (item: NavItem, i: number) => {
     if (filter.trim() && !includesFa(item.label, filter)) return null;
     const inner = (
       <>
         <Icon name={item.icon} />
         <span className="lbl">{item.label}</span>
-        {item.badge && pending > 0 && <span className="badge num">{toPersianDigits(pending)}</span>}
+        {item.badge && badges[item.badge] > 0 && <span className="badge num" aria-label={item.badge === 'inbox' ? `${toPersianDigits(pending)} مورد منتظر` : `${toPersianDigits(chequesDue)} چک نزدیک سررسید`}>{toPersianDigits(badges[item.badge])}</span>}
         {item.live && <><span className="dot" title="کار در جریان" aria-hidden="true" /><span className="sr-only">، کار در جریان</span></>}
       </>
     );
     return (
       <li key={item.label} className="pre-in" style={{ ['--i' as string]: i }}>
         {item.href ? (
-          <a href={item.href} title={item.label} className={active === item.href ? 'active' : undefined} aria-current={active === item.href ? 'page' : undefined}
-            onClick={() => { spyLock.current = Number.MAX_SAFE_INTEGER; setActive(item.href!); if (narrow) setDrawer(false); }}>{inner}</a>
+          <Link href={item.href} title={item.label} className={active === item.href ? 'active' : undefined} aria-current={active === item.href ? 'page' : undefined}
+            onClick={() => { if (narrow) setDrawer(false); }}>{inner}</Link>
         ) : (
           <button type="button" title={item.label} onClick={() => toast(item.soon!, undefined, 'info')}>{inner}</button>
         )}
@@ -306,12 +280,13 @@ export function AppShell({ children }: { children: ReactNode }) {
       {drawer && <div className="drawer-scrim" onClick={() => openDrawer(false)} />}
 
       <div className="main" id="top">
+        <a className="skip-link" href="#content">رفتن به محتوای صفحه</a>
         <header className="topbar glass pre-drop" ref={topbar}>
           <button ref={menuBtn} className="icon-btn menu-btn" type="button" aria-label="باز کردن منو" aria-controls="sidebar" aria-expanded={drawer} onClick={() => openDrawer(true)}>
             <Icon name="menu" />
           </button>
           <div className="page-title">
-            <h1>داشبورد</h1>
+            <h1 id="pageTitle" tabIndex={-1}>{title}</h1>
             <p>{formatJalali(book.today, { weekday: true })} <span className="sample-chip">دادهٔ نمونه</span></p>
           </div>
           <span className="sr-only" id="projectDdLbl">دفتر</span>
@@ -322,11 +297,16 @@ export function AppShell({ children }: { children: ReactNode }) {
             <Icon name="search" size="sm" />
             <span className="sr-only">جستجو در تراکنش‌ها</span>
             <input type="search" placeholder="جستجو در تراکنش‌ها…" onKeyDown={(e) => {
-              if (e.key === 'Enter') window.dispatchEvent(new CustomEvent('tx-search', { detail: (e.target as HTMLInputElement).value }));
+              if (e.key !== 'Enter') return;
+              const q = (e.target as HTMLInputElement).value;
+              setPendingSearch(q);
+              // the list may already exist (kept from an earlier visit): tell it directly, then go there
+              window.dispatchEvent(new CustomEvent('tx-search', { detail: q }));
+              if (pathname !== '/transactions') router.push('/transactions');
             }} />
           </label>
-          <motion.button className="btn primary capture-top" type="button" whileTap={{ scale: 0.95 }} onClick={() => setCapture(true)}>
-            <Icon name="mic" />ثبت سریع
+          <motion.button className="btn capture-top soft" type="button" whileTap={{ scale: 0.95 }} onClick={() => openAssistant()}>
+            <Icon name="mic" />دستیار
           </motion.button>
         </header>
         {!demoOff && (
@@ -336,10 +316,10 @@ export function AppShell({ children }: { children: ReactNode }) {
             <button className="icon-btn sm demo-x" type="button" aria-label="بستن این پیام" onClick={hideDemo}><Icon name="x" size="sm" /></button>
           </div>
         )}
-        {children}
+        <div id="content" className="page">{children}</div>
       </div>
 
-      <button className="fab" type="button" onClick={() => setCapture(true)}><Icon name="mic" />ثبت سریع</button>
+      {pathname !== '/' && <button className="fab" type="button" onClick={() => openAssistant()}><Icon name="mic" />دستیار</button>}
 
       <Sheet open={settings} onClose={() => setSettings(false)} returnFocus=".menu-btn">
         <SheetHead icon="sliders" kind="voice" title="تنظیمات" sub="فقط روی همین دستگاه ذخیره می‌شود" onClose={() => setSettings(false)} />
@@ -370,7 +350,6 @@ export function AppShell({ children }: { children: ReactNode }) {
         <div className="sheet-foot"><button className="btn primary" type="button" onClick={() => setSettings(false)}><Icon name="check" />انجام شد</button></div>
       </Sheet>
 
-      <CaptureSheet open={capture} onClose={() => setCapture(false)} />
     </div>
     </MotionConfig>
   );

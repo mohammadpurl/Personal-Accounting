@@ -1,28 +1,30 @@
 'use client';
 // Review-and-confirm window for an inbox item, the quick-capture window, and the transaction edit window.
-import { useEffect, useId, useMemo, useState } from 'react';
+import Link from 'next/link';
+import { useId, useMemo, useState } from 'react';
 import { useReducedMotion } from 'motion/react';
 import { describeEffect, DOC_CATEGORIES, validateDraft, type DraftKind } from '@/lib/drafts';
-import { accountBalance, CardError, type DraftCard, type InboxItem, type Transaction } from '@/lib/book';
+import { accountBalance, CardError, chequeOf, type DraftCard, type InboxItem, type Transaction } from '@/lib/book';
 import { formatShortToman, formatToman, parseWholeNumber, toPersianDigits, tomanToRial } from '@/lib/money';
 import { formatJalali } from '@/lib/jalali';
 import { DatePicker, Dropdown, Icon, Sheet, SheetHead, useConfirmTap, useToast, type Option } from './ui';
 import { useBook } from '@/state/book';
 
-const KIND_ICON: Record<InboxItem['kind'], string> = { voice: 'mic', receipt: 'camera', invoice: 'file' };
+export const KIND_ICON: Record<InboxItem['kind'], string> = { voice: 'mic', receipt: 'camera', invoice: 'file', cheque: 'receipt', text: 'msg' };
 const CARD: Record<DraftKind, { label: string; tone: string }> = {
   payment: { label: 'پرداخت', tone: 'neg' }, receipt: { label: 'دریافت', tone: 'pos' }, transfer: { label: 'انتقال', tone: 'info' },
   work_log: { label: 'کارکرد کارگر', tone: 'accent' }, stage_progress: { label: 'پیشرفت مرحله', tone: 'pos' },
   daily_note: { label: 'یادداشت روزانه', tone: 'warn' }, document: { label: 'سند دریافتی', tone: 'info' },
+  cheque: { label: 'چک', tone: 'warn' },
 };
-const CHANNEL: Record<InboxItem['channel'], string> = { bale: 'ربات بله', telegram: 'ربات تلگرام', web: 'همین صفحه' };
+export const CHANNEL: Record<InboxItem['channel'], string> = { bale: 'ربات بله', telegram: 'ربات تلگرام', web: 'همین صفحه' };
 const METHODS: Option[] = ['کارت به کارت', 'پایا', 'ساتنا', 'نقد', 'چک'].map((v) => ({ value: v, label: v }));
 
 type Fields = Record<string, unknown>;
 
 // ---------- field controls ----------
 
-function Field({ label, guess, error, wide, children, id }: { label: string; guess?: string; error?: string; wide?: boolean; children: (labelId: string) => React.ReactNode; id?: string }) {
+export function Field({ label, guess, error, wide, children, id }: { label: string; guess?: string; error?: string; wide?: boolean; children: (labelId: string) => React.ReactNode; id?: string }) {
   const uid = useId();
   const labelId = id ?? `${uid}-l`;
   const errId = `${uid}-e`;
@@ -36,7 +38,7 @@ function Field({ label, guess, error, wide, children, id }: { label: string; gue
   );
 }
 
-function MoneyInput({ rial, onChange, labelledBy, warn, invalid }: { rial: string | undefined; onChange: (rial: string) => void; labelledBy: string; warn?: boolean; invalid?: boolean }) {
+export function MoneyInput({ rial, onChange, labelledBy, warn, invalid }: { rial: string | undefined; onChange: (rial: string) => void; labelledBy: string; warn?: boolean; invalid?: boolean }) {
   const shown = rial ? formatToman(BigInt(rial), { unit: false }) : '';
   const [text, setText] = useState(shown);
   const [prevShown, setPrevShown] = useState(shown);
@@ -51,7 +53,7 @@ function MoneyInput({ rial, onChange, labelledBy, warn, invalid }: { rial: strin
   );
 }
 
-function TextInput({ value, onChange, labelledBy, area, warn, invalid, numeric }: { value: string; onChange: (v: string) => void; labelledBy: string; area?: number; warn?: boolean; invalid?: boolean; numeric?: boolean }) {
+export function TextInput({ value, onChange, labelledBy, area, warn, invalid, numeric }: { value: string; onChange: (v: string) => void; labelledBy: string; area?: number; warn?: boolean; invalid?: boolean; numeric?: boolean }) {
   const cls = `${warn ? ' warn' : ''}${invalid ? ' err' : ''}`;
   return area ? (
     <div className={`inp area${cls}`}><textarea rows={area} aria-labelledby={labelledBy} aria-invalid={invalid || undefined} value={value} onChange={(e) => onChange(e.target.value)} /></div>
@@ -60,7 +62,7 @@ function TextInput({ value, onChange, labelledBy, area, warn, invalid, numeric }
   );
 }
 
-function useOptions() {
+export function useOptions() {
   const { book, projectId } = useBook();
   return useMemo(() => {
     const ledgerKind = (id: string) => book.ledgers.find((l) => l.id === id)?.kind;
@@ -148,6 +150,29 @@ function CardFields({ card, f, set, errors }: { card: DraftCard; f: Fields; set:
       );
     case 'daily_note':
       return <div className="fields">{text('body', 'یادداشت', 3)}{dd('stage_id', 'مرحله', o.stages)}{date('note_date', 'تاریخ')}</div>;
+    case 'cheque':
+      return (
+        <div className="fields">
+          <Field label="نوع چک" guess={g('direction')} error={errors.direction}>{(id) => (
+            <Dropdown labelledBy={id} warn={!!g('direction')} invalid={!!errors.direction} value={str('direction')} onChange={(v) => set('direction', v)}
+              options={[{ value: 'issued', label: 'صادر کردم', hint: 'پول از حساب ما می‌رود' }, { value: 'received', label: 'گرفتم', hint: 'پول به حساب ما می‌آید' }]} />
+          )}</Field>
+          {money('amount_rial', 'مبلغ')}
+          {dd('person_id', f.direction === 'received' ? 'از' : 'در وجه', o.people)}
+          {date('due_date', 'سررسید')}
+          {dd('account_id', f.direction === 'received' ? 'واریز به حساب (اختیاری)' : 'از حساب', o.accounts)}
+          {text('bank', 'بانک')}
+          {text('sayad_no', 'شمارهٔ صیادی')}
+          {f.direction !== 'received' && (
+            <Field label="بابت" guess={g('settles')}>{(id) => (
+              <Dropdown labelledBy={id} warn={!!g('settles')} value={f.settles ? 'settle' : 'cost'} onChange={(v) => set('settles', v === 'settle')}
+                options={[{ value: 'cost', label: 'خرج تازه', hint: 'وقتی پاس شد خرج مرحله می‌شود' }, { value: 'settle', label: 'تسویهٔ بدهی قبلی', hint: 'فقط طلب طرف کم می‌شود' }]} />
+            )}</Field>
+          )}
+          {f.direction !== 'received' && !f.settles && dd('stage_id', 'مرحله', o.stages)}
+          {text('description', 'شرح', 2)}
+        </div>
+      );
     case 'document':
       return (
         <div className="fields">
@@ -224,7 +249,12 @@ function ReviewBody({ item, onClose }: { item: InboxItem; onClose: () => void })
     <>
       <SheetHead icon={KIND_ICON[item.kind]} kind={item.kind} title={item.title} sub={`${CHANNEL[item.channel]} · ${item.receivedLabel}`} onClose={onClose} />
       <div className="sheet-body">
-        {item.transcript ? (
+        {item.text ? (
+          <>
+            <div className="sec-title"><Icon name="msg" size="sm" />پیام شما</div>
+            <div className="transcript">{item.text}</div>
+          </>
+        ) : item.transcript ? (
           <>
             <div className="player">
               <button className="play" type="button" aria-label={playing ? 'توقف' : 'پخش ویس'} onClick={() => setPlaying((p) => !p)}><Icon name={playing ? 'pause' : 'play'} /></button>
@@ -238,7 +268,7 @@ function ReviewBody({ item, onClose }: { item: InboxItem; onClose: () => void })
         ) : (
           <div className="src-row">
             <button type="button" className="thumb" aria-label="بزرگ کردن عکس" aria-pressed={false} onClick={(e) => { const b = e.currentTarget.classList.toggle('big'); e.currentTarget.setAttribute('aria-pressed', String(b)); }}>
-              <span className="paper" aria-hidden="true"><i /><i className="w" /><b>رسید</b><i /><i className="w" /><b>{item.chips[0]}</b><i className="w" /></span>
+              <span className="paper" aria-hidden="true"><i /><i className="w" /><b>{item.kind === 'cheque' ? 'چک' : item.kind === 'invoice' ? 'فاکتور' : 'رسید'}</b><i /><i className="w" /><b>{item.chips[0]}</b><i className="w" /></span>
             </button>
             <div className="src-text">
               <div className="sec-title"><Icon name={KIND_ICON[item.kind]} size="sm" />متن خوانده‌شده از عکس</div>
@@ -286,53 +316,9 @@ function ReviewBody({ item, onClose }: { item: InboxItem; onClose: () => void })
         <button className="btn primary" type="button" disabled={cards.length === 0 || bad.length > 0} aria-describedby={bad.length ? 'confirmWhy' : undefined} onClick={doConfirm}><Icon name="check" />تأیید و ثبت {toPersianDigits(cards.length)} مورد</button>
         <button className="btn" type="button" onClick={onClose}>بعداً</button>
         <span className="grow" />
-        <button className="btn ghost danger" type="button" onClick={doReject}>{rejectArmed ? 'دوباره بزنید' : `رد کل ${item.kind === 'voice' ? 'ویس' : 'عکس'}`}</button>
+        <button className="btn ghost danger" type="button" onClick={doReject}>{rejectArmed ? 'دوباره بزنید' : `رد کل ${item.kind === 'voice' ? 'ویس' : item.kind === 'text' ? 'پیام' : 'عکس'}`}</button>
       </div>
     </>
-  );
-}
-
-// ---------- quick capture ----------
-
-export function CaptureSheet({ open, onClose: close }: { open: boolean; onClose: () => void }) {
-  const { capture } = useBook();
-  const toast = useToast();
-  const [recording, setRecording] = useState(false);
-  const [seconds, setSeconds] = useState(0);
-  const onClose = () => { setRecording(false); setSeconds(0); close(); };
-  useEffect(() => {
-    if (!recording) return;
-    const t = setInterval(() => setSeconds((s) => s + 1), 1000);
-    return () => clearInterval(t);
-  }, [recording]);
-  const send = (kind: 'voice' | 'receipt' | 'invoice') => {
-    capture(kind);
-    onClose();
-    toast(kind === 'voice' ? 'ویس فرستاده شد؛ تا چند لحظهٔ دیگر در «منتظر تأیید» می‌آید' : 'فایل فرستاده شد؛ تا چند لحظهٔ دیگر در «منتظر تأیید» می‌آید');
-  };
-  return (
-    <Sheet open={open} onClose={onClose}>
-      <SheetHead icon="mic" kind="voice" title="ثبت سریع" onClose={onClose} />
-      <div className="sheet-body">
-        {!recording ? (
-          <>
-            <p className="muted">بگویید یا بفرستید؛ سیستم می‌فهمد و در «منتظر تأیید» می‌گذارد. همین کار از ربات بله هم می‌شود.</p>
-            <div className="cap-opts">
-              <button className="cap-opt" type="button" onClick={() => setRecording(true)}><span className="kind-ic voice"><Icon name="mic" /></span><div>ضبط ویس<span className="d">«امروز ۴ کارگر داشتیم…»</span></div></button>
-              <label className="cap-opt"><span className="kind-ic receipt"><Icon name="camera" /></span><div>عکس رسید<span className="d">کارت به کارت، پایا، چک</span></div><input type="file" accept="image/*" onChange={(e) => e.target.files?.[0] && send('receipt')} /></label>
-              <label className="cap-opt"><span className="kind-ic invoice"><Icon name="file" /></span><div>فاکتور یا سند<span className="d">عکس یا PDF</span></div><input type="file" accept="image/*,application/pdf" onChange={(e) => e.target.files?.[0] && send('invoice')} /></label>
-            </div>
-          </>
-        ) : (
-          <div className="rec-box">
-            <div className="muted"><span className="rec-dot" />در حال ضبط (نمونه؛ هنوز صدا ضبط نمی‌شود)</div>
-            <div className="rec-time num" role="timer">{toPersianDigits(Math.floor(seconds / 60))}:{seconds % 60 < 10 ? '۰' : ''}{toPersianDigits(seconds % 60)}</div>
-            <div className="wave rec" aria-hidden="true">{Array.from({ length: 40 }, (_, i) => <i key={i} style={{ height: `${30 + ((i * 37) % 60)}%`, animationDelay: `${(i % 8) * 0.09}s` }} />)}</div>
-            <button className="btn primary" type="button" autoFocus onClick={() => send('voice')}><Icon name="check" />پایان و ارسال</button>
-          </div>
-        )}
-      </div>
-    </Sheet>
   );
 }
 
@@ -350,6 +336,7 @@ export function TxSheet({ tx, onClose }: { tx: Transaction | null; onClose: () =
 
 function TxBody({ tx, onClose }: { tx: Transaction; onClose: () => void }) {
   const { book, editTx, voidTx } = useBook();
+  const fromCheque = chequeOf(book, tx.id);
   const toast = useToast();
   const o = useOptions();
   const [desc, setDesc] = useState(tx.description);
@@ -382,8 +369,9 @@ function TxBody({ tx, onClose }: { tx: Transaction; onClose: () => void }) {
   return (
     <>
       <SheetHead icon={tx.source === 'voice' ? 'mic' : tx.source === 'manual' ? 'pen' : tx.source === 'receipt' ? 'camera' : 'file'} kind={tx.source === 'manual' ? 'voice' : tx.source}
-        title={transfer ? 'ویرایش انتقال' : 'ویرایش تراکنش'} sub={`${SRC[tx.source]} · ${formatJalali(tx.occurredOn)}`} onClose={onClose} />
+        title={fromCheque ? 'تراکنش چک' : transfer ? 'ویرایش انتقال' : 'ویرایش تراکنش'} sub={`${SRC[tx.source]} · ${formatJalali(tx.occurredOn)}`} onClose={onClose} />
       <div className="sheet-body">
+        <fieldset className="plain-fs" disabled={!!fromCheque}>
         <div className="pcard"><div className="fields">
           <Field label="شرح" wide>{(id) => <TextInput labelledBy={id} value={desc} onChange={setDesc} />}</Field>
           <Field label="مبلغ" error={!amount ? 'مبلغ را بنویسید' : undefined}>{(id) => <MoneyInput labelledBy={id} rial={amount} invalid={!amount} onChange={setAmount} />}</Field>
@@ -393,18 +381,27 @@ function TxBody({ tx, onClose }: { tx: Transaction; onClose: () => void }) {
           {!transfer && tx.isCost && <Field label="مرحله">{(id) => <Dropdown labelledBy={id} options={o.stages} value={stage} onChange={setStage} />}</Field>}
           <Field label={transfer ? (tx.amountRial < 0n ? 'از حساب' : 'به حساب') : 'حساب'}>{(id) => <Dropdown labelledBy={id} options={o.accounts} value={account} onChange={setAccount} />}</Field>
         </div></div>
+        </fieldset>
         {transfer && <div className="effect"><span>این یک طرفِ انتقال بین حساب‌هاست؛ مبلغ و حذف روی هر دو طرف اعمال می‌شود.</span></div>}
         {tx.source !== 'manual' && <div className="effect"><span>منبع: {SRC[tx.source]}. فایل اصلی کنار همین تراکنش در بایگانی نگه داشته می‌شود.</span></div>}
         <div className="sec-title"><Icon name="clip" size="sm" />تاریخچه</div>
         <ol className="hist">{tx.history.map((h, i) => <li key={i}>{h}</li>)}</ol>
         <p className="why">موجودی فعلی این حساب: {formatToman(accountBalance(book, tx.accountId))}</p>
       </div>
-      <div className="sheet-foot">
+      {fromCheque ? (
+        <div className="sheet-foot">
+          <span className="foot-note">این تراکنش از پاس شدن یک چک آمده؛ برای تغییرش، خود چک را در صفحهٔ «چک‌ها» به «در جریان» برگردانید.</span>
+          <Link className="btn primary" href="/cheques" onClick={onClose}><Icon name="receipt" />رفتن به چک‌ها</Link>
+          <button className="btn" type="button" onClick={onClose}>بستن</button>
+        </div>
+      ) : (
+        <div className="sheet-foot">
         <button className="btn primary" type="button" onClick={save}><Icon name="check" />ذخیرهٔ تغییرات</button>
         <button className="btn" type="button" onClick={onClose}>بستن</button>
         <span className="grow" />
         <button className="btn ghost danger" type="button" onClick={del}>{armed ? 'دوباره بزنید' : transfer ? 'حذف انتقال' : 'حذف تراکنش'}</button>
       </div>
+      )}
     </>
   );
 }
