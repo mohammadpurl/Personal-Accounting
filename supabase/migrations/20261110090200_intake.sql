@@ -147,6 +147,7 @@ create table public.jobs (
   max_attempts smallint not null default 8,
   next_run_at timestamptz not null default now(),
   locked_at timestamptz,
+  lease uuid, -- new at every claim; a result is accepted only with the lease of the running claim
   last_error text,
   created_at timestamptz not null default now(),
   unique (kind, dedupe_key)
@@ -169,17 +170,9 @@ begin
   for update skip locked
   limit 1;
   if not found then return null; end if;
-  update public.jobs set status = 'running', locked_at = now(), attempts = attempts + 1 where id = j.id returning * into j;
+  update public.jobs set status = 'running', locked_at = now(), attempts = attempts + 1, lease = gen_random_uuid() where id = j.id returning * into j;
   return j;
 end;
-$$;
-
--- A worker on a long job (a long voice) says it is still alive, so the job is not taken again after 10 minutes.
-create function public.heartbeat_job(p_id bigint)
-returns void
-language sql security definer set search_path = public
-as $$
-  update public.jobs set locked_at = now() where id = p_id and status = 'running';
 $$;
 
 -- Finish a job; on failure retry with growing delay (30 s, 1 min, 2 min ... up to 1 h), then mark failed.
@@ -189,14 +182,15 @@ language plpgsql security definer set search_path = public
 as $$
 begin
   if p_ok then
-    update public.jobs set status = 'done', locked_at = null, last_error = null where id = p_id;
+    -- only a running job finishes: a late or repeated call never reopens a job that is already done
+    update public.jobs set status = 'done', locked_at = null, last_error = null where id = p_id and status = 'running';
   else
     update public.jobs set
       status = case when attempts >= max_attempts then 'failed'::public.job_status else 'pending'::public.job_status end,
       locked_at = null,
       last_error = p_error,
       next_run_at = now() + least(interval '1 hour', interval '30 seconds' * power(2, greatest(attempts - 1, 0)))
-    where id = p_id;
+    where id = p_id and status = 'running';
   end if;
 end;
 $$;

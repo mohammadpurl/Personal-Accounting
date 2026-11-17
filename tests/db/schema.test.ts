@@ -742,3 +742,135 @@ describe('cheque link survives reopening', () => {
     });
   });
 });
+
+describe('message pipeline (bot → archive → relay → drafts)', () => {
+  it('a linked voice becomes drafts the owner confirms; the sender is told; the same message is taken once', async () => {
+    await asService(db, async () => {
+      await db.query(`insert into user_identities (user_id, channel, external_user_id, phone) values ($1, 'bale', 'u-owner', '+989120000009') on conflict do nothing`, [OWNER]);
+    });
+    const path = `${project}/inbox/voice-pipe.ogg`;
+    const files = JSON.stringify([{ storage_path: path, mime: 'audio/ogg', size_bytes: 2048, sha256: sha(4242), kind: 'voice', duration_ms: 9000 }]);
+    const ib = await asService(db, async () => (await one<{ id: string }>(db, `select ingest_message('bale', 'u-owner', '9009', '1', null, $1) id`, [files])).id);
+    const again = await asService(db, async () => (await one<{ id: string }>(db, `select ingest_message('bale', 'u-owner', '9009', '1', null, $1) id`, [files])).id);
+    expect(again).toBe(ib);
+    await asService(db, async () => {
+      await expect(db.query(`select ingest_message('bale', 'stranger', '1', '1', 'سلام')`)).rejects.toThrow(/not linked/);
+      const t = await one<{ id: number; kind: string; lease: string }>(db, `select * from claim_job(array['transcribe'])`);
+      expect(t.kind).toBe('transcribe');
+      const ctx = await one<{ c: { inbox: { id: string }; media: { id: string }[]; people: unknown[]; stages: unknown[]; today: string } }>(db, `select job_context($1) c`, [t.id]);
+      expect(ctx.c.inbox.id).toBe(ib);
+      expect(ctx.c.today).toBe((await one<{ d: string }>(db, `select ((received_at at time zone 'Asia/Tehran')::date)::text d from inbox_items where id = $1`, [ib])).d);
+      expect(ctx.c.people.length).toBeGreaterThan(0);
+      const items = JSON.stringify([{ media: ctx.c.media[0].id, text: 'امروز پنج کارگر داشتیم' }]);
+      await expect(db.query(`select save_transcript($1, gen_random_uuid(), $2, 'test-stt')`, [t.id, items])).rejects.toThrow(/no longer running/);
+      await db.query(`select save_transcript($1, $2, $3, 'test-stt')`, [t.id, t.lease, items]);
+      const e = await one<{ id: number; kind: string; lease: string }>(db, `select * from claim_job(array['extract'])`);
+      expect(e.kind).toBe('extract');
+      const cards = JSON.stringify([{ kind: 'work_log', fields: { headcount: 5, wage_rial: '12000000', paid: false, crew_person_id: crew, stage_id: frame }, guess: { paid: 'گفته نشد' } }]);
+      await db.query(`select save_extraction($1, $2, $3, array['کارکرد ۵ نفر'], array['پنج کارگر'], null, 'test-model', 'v1')`, [e.id, e.lease, cards]);
+      // the relay never heard the answer and reports a failure: the finished job stays finished
+      await db.query(`select fail_job($1, $2, 'timeout')`, [e.id, e.lease]);
+      expect((await one<{ s: string }>(db, `select status::text s from jobs where id = $1`, [e.id])).s).toBe('done');
+      const item = await one<{ status: string; chips: string[] }>(db, `select status::text, chips from inbox_items where id = $1`, [ib]);
+      expect(item).toEqual({ status: 'ready', chips: ['کارکرد ۵ نفر'] });
+      const n = await one<{ payload: { chat_id: string; text: string } }>(db, `select payload from jobs where kind = 'notify_bale' and dedupe_key = $1`, [`understood:${ib}`]);
+      expect(n.payload.chat_id).toBe('9009');
+      expect(n.payload.text).toMatch(/کارکرد ۵ نفر/);
+    });
+    const drafts = await asService(db, async () => (await rows<{ id: string }>(db, `select id from drafts where inbox_item_id = $1`, [ib])).map((d) => d.id));
+    await asUser(db, OWNER, async () => {
+      await db.query(`select confirm_inbox($1, $2)`, [ib, drafts]);
+      expect((await one<{ s: string }>(db, `select status::text s from inbox_items where id = $1`, [ib])).s).toBe('confirmed');
+    });
+    // a confirmed item is never reopened: nothing to claim, and an old claim cannot write
+    await asService(db, async () => {
+      expect((await one<{ k: string | null }>(db, `select (claim_job(array['extract'])).kind::text k`)).k).toBeNull();
+      expect((await one<{ n: number }>(db, `select count(*)::int n from drafts where inbox_item_id = $1 and status = 'pending'`, [ib])).n).toBe(0);
+    });
+  });
+  it('a job taken over after a stall: the first worker can no longer write; a heartbeat keeps a long job its own', async () => {
+    await asService(db, async () => {
+      const ib = (await one<{ id: string }>(db, `select ingest_message('bale', 'u-owner', '9009', '44', 'دو میلیون به امید دادم') id`)).id;
+      const a = await one<{ id: number; lease: string }>(db, `select * from claim_job(array['extract'])`);
+      await db.query(`select job_heartbeat($1, $2)`, [a.id, a.lease]);
+      expect((await one<{ k: string | null }>(db, `select (claim_job(array['extract'])).kind::text k`)).k).toBeNull(); // still its own
+      await db.query(`update jobs set locked_at = now() - interval '11 minutes' where id = $1`, [a.id]);
+      const b = await one<{ id: number; lease: string }>(db, `select * from claim_job(array['extract'])`);
+      expect(b.id).toBe(a.id);
+      expect(b.lease).not.toBe(a.lease);
+      await expect(db.query(`select save_extraction($1, $2, '[]', '{}', '{}', null, 'm', 'v')`, [a.id, a.lease])).rejects.toThrow(/no longer running/);
+      await db.query(`select fail_job($1, $2, 'late')`, [a.id, a.lease]); // the old worker's failure changes nothing
+      expect((await one<{ s: string }>(db, `select status::text s from jobs where id = $1`, [a.id])).s).toBe('running');
+      await db.query(`select save_extraction($1, $2, '[]', '{}', '{}', null, 'm', 'v')`, [b.id, b.lease]);
+      expect((await one<{ s: string }>(db, `select status::text s from inbox_items where id = $1`, [ib])).s).toBe('ready');
+      // a bot can close only replies of its own channel
+      const reply = await one<{ id: number; kind: string; lease: string; payload: { reply_to: string } }>(db, `select * from claim_job(array['notify_bale'])`);
+      expect(reply.kind).toBe('notify_bale');
+      expect(reply.payload.reply_to).toMatch(/^\d+$/); // the reply quotes the message it is about
+      await expect(db.query(`select finish_notify($1, $2, 'telegram', true)`, [reply.id, reply.lease])).rejects.toThrow(/not a running reply/);
+      await expect(db.query(`select finish_notify($1, gen_random_uuid(), 'bale', true)`, [reply.id])).rejects.toThrow(/not a running reply/);
+      await db.query(`select finish_notify($1, $2, 'bale', true)`, [reply.id, reply.lease]);
+    });
+  });
+  it('a file must sit under its own ledger, the server functions are closed to clients, and a job that keeps failing marks the item', async () => {
+    const bad = JSON.stringify([{ storage_path: `${personal}/inbox/x.jpg`, mime: 'image/jpeg', size_bytes: 10, sha256: sha(5151), kind: 'image' }]);
+    await asService(db, async () => {
+      await expect(db.query(`select ingest_message('bale', 'u-owner', '9009', '2', null, $1)`, [bad])).rejects.toThrow(/its own ledger/);
+      const ib = (await one<{ id: string }>(db, `select ingest_message('bale', 'u-owner', '9009', '3', 'سه میلیون به امید دادم') id`)).id;
+      await db.query(`update jobs set max_attempts = 1 where dedupe_key = $1`, [`inbox:${ib}`]);
+      const j = await one<{ id: number; lease: string }>(db, `select * from claim_job(array['extract'])`);
+      await db.query(`select fail_job($1, $2, 'model unavailable')`, [j.id, j.lease]);
+      expect((await one<{ s: string; e: string }>(db, `select status::text s, error e from inbox_items where id = $1`, [ib]))).toEqual({ s: 'failed', e: 'model unavailable' });
+    });
+    await asUser(db, OWNER, async () => {
+      await expect(db.query(`select ingest_message('bale', 'u-owner', '1', '1', 'x')`)).rejects.toThrow(/permission denied/);
+      await expect(db.query(`select job_context(1)`)).rejects.toThrow(/permission denied/);
+    });
+  });
+});
+
+describe('the sender hears back even when it fails', () => {
+  it('a job that fails for good queues a reply to the same chat', async () => {
+    const ib = await asService(db, async () => (await one<{ id: string }>(db, `select ingest_message('bale', 'u-owner', '7707', '77', 'سلام') id`)).id);
+    await asService(db, async () => {
+      // a failure that retrying cannot fix ends the job at once, whatever its attempts
+      const j = await one<{ id: number; lease: string }>(db, `select * from claim_job(array['extract'])`);
+      await db.query(`select fail_job($1, $2, 'boom', true)`, [j.id, j.lease]);
+      const n = await one<{ payload: { chat_id: string; text: string } }>(db, `select payload from jobs where kind = 'notify_bale' and dedupe_key = $1`, [`failed:${ib}`]);
+      expect(n.payload.chat_id).toBe('7707');
+      expect(n.payload.text).toMatch(/نتوانستم/);
+    });
+  });
+  it('a job whose worker dies every time is given up once its attempts are used, and the sender is told', async () => {
+    await asService(db, async () => {
+      const ib = (await one<{ id: string }>(db, `select ingest_message('bale', 'u-owner', '7707', '78', 'سلام') id`)).id;
+      await db.query(`update jobs set max_attempts = 2 where dedupe_key = $1`, [`inbox:${ib}`]);
+      for (let i = 0; i < 2; i++) {
+        const j = await one<{ id: number }>(db, `select * from claim_job(array['extract'])`);
+        expect(j.id).not.toBeNull();
+        await db.query(`update jobs set locked_at = now() - interval '11 minutes' where id = $1`, [j.id]); // it died
+      }
+      expect((await one<{ k: string | null }>(db, `select (claim_job(array['extract'])).kind::text k`)).k).toBeNull();
+      expect((await one<{ s: string }>(db, `select status::text s from jobs where dedupe_key = $1 and kind = 'extract'`, [`inbox:${ib}`])).s).toBe('failed');
+      expect((await one<{ s: string }>(db, `select status::text s from inbox_items where id = $1`, [ib])).s).toBe('failed');
+      expect((await one<{ n: number }>(db, `select count(*)::int n from jobs where dedupe_key = $1`, [`failed:${ib}`])).n).toBe(1);
+    });
+  });
+  it('a video with nothing written is archived as it is: no AI job, no failure reply', async () => {
+    await asService(db, async () => {
+      const files = JSON.stringify([{ storage_path: `${project}/inbox/clip.mp4`, mime: 'video/mp4', size_bytes: 4096, sha256: sha(8181), kind: 'video', duration_ms: 5000 }]);
+      const ib = (await one<{ id: string }>(db, `select ingest_message('bale', 'u-owner', '7707', '81', null, $1) id`, [files])).id;
+      expect((await one<{ s: string }>(db, `select status::text s from inbox_items where id = $1`, [ib])).s).toBe('ready');
+      expect((await one<{ n: number }>(db, `select count(*)::int n from jobs where dedupe_key = $1`, [`inbox:${ib}`])).n).toBe(0);
+    });
+  });
+  it('the day of a message is when it was sent; a time from far away is not believed', async () => {
+    await asService(db, async () => {
+      const late = (await one<{ id: string }>(db, `select ingest_message('bale', 'u-owner', '7707', '79', 'سلام', '[]', null, now() - interval '20 hours') id`)).id;
+      const wild = (await one<{ id: string }>(db, `select ingest_message('bale', 'u-owner', '7707', '80', 'سلام', '[]', null, '2001-01-01') id`)).id;
+      const age = async (id: string) => (await one<{ h: number }>(db, `select (extract(epoch from now() - received_at) / 3600)::float8 h from inbox_items where id = $1`, [id])).h;
+      expect(await age(late)).toBeGreaterThan(19);
+      expect(await age(wild)).toBeLessThan(1);
+    });
+  });
+});

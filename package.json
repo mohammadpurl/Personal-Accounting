@@ -6,15 +6,22 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "vitest run",
+    "relay": "tsx --env-file-if-exists=.env.local services/relay.ts",
+    "bale-bot": "tsx --env-file-if-exists=.env.local services/bale-bot.ts",
+    "stt-eval": "tsx --env-file-if-exists=.env.local scripts/stt-eval.ts"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.119.0",
     "gsap": "^3.12.5",
     "jalaali-js": "^1.2.8",
     "motion": "^12.43.0",
     "next": "16.4.6",
+    "openai": "^7.57.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
+    "standardwebhooks": "^1.1.1",
     "zod": "^4.6.7"
   },
   "devDependencies": {
@@ -25,6 +32,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.4.6",
+    "tsx": "^4.23.15",
     "typescript": "^5",
     "vitest": "^3.2.7"
   }

@@ -440,4 +440,4 @@ grant execute on function
   public.can_edit_people(uuid), public.can_read_object(text), public.ledger_owner_ws(uuid),
   public.can_use_account(uuid, uuid), public.media_in_ledger(uuid, uuid)
 to authenticated;
--- claim_job, heartbeat_job, finish_job, link_identity, instantiate_stages: server (service role) only.
+-- claim_job, finish_job, link_identity, instantiate_stages: server (service role) only.
